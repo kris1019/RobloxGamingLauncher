@@ -1,35 +1,37 @@
 # Roblox Gaming Launcher
 
-A Windows 10/11 Roblox launcher with continuous network monitoring and safe gaming optimization.
+A Windows Roblox launcher with a modern multi-tab GUI, saved game library, public-server browser, continuous network monitoring, lag-spike detection, session history, and safe gaming optimization.
 
 ## Features
-- Live ping measurements every 500 ms
-- Rolling live ping graph
-- Average ping
-- Jitter
-- Packet-loss display
-- Ping-spike detection
-- Worst observed ping
-- CPU and RAM monitoring
-- Roblox launcher button
-- Safe high-performance power-plan optimization
-- Reset to Balanced power plan
+
+- Searchable Game Library
+- Add/remove Roblox games by Place ID
+- Selected-game Home dashboard
+- JOIN BEST SERVER
+- Public server browser using Roblox's public server listing API
+- Join a specific public server when Roblox accepts the gameInstanceId URI
+- Continuous ping monitoring instead of a one-time test
+- Average ping, jitter, packet loss, spikes, worst ping
+- Live graph
+- CPU/RAM monitoring
+- Session history saved in data/sessions.json
+- Safe Windows high-performance power-plan toggle
 - 20-second connection test
-- Two BAT files: setup and launcher
+- Settings for monitor interval and automatic optimization
+- SETUP.bat and ROBLOX_LAUNCHER.bat
+
+## Important server limitation
+
+Normal desktop apps do not reliably receive the real IP/latency of every Roblox game server. The server browser therefore shows public server metadata and a selection score based on available slots plus your current network health. It does **not** fake an exact per-server ping.
 
 ## Install
-1. Run `SETUP.bat`.
-2. Run `ROBLOX_LAUNCHER.bat`.
 
-## Important
-The monitor continuously tests network reachability. It does not claim to know the exact Roblox game-server IP when Roblox does not expose that information. The launcher also avoids unsafe registry hacks and security-disabling tweaks.
+1. Run SETUP.bat once.
+2. Run ROBLOX_LAUNCHER.bat.
+3. Open Game Library and select/add a game.
+4. Use Find Servers or JOIN BEST SERVER.
 
-## Planned upgrades
-- Roblox session/process detection
-- Game-specific profiles
-- Better region/endpoint testing
-- Router/ISP diagnostics
-- Historical session graphs
-- Automatic lag-event reports
-- GPU metrics
-- Configurable thresholds
+## Data
+
+Game library: data/games.json
+Session history: data/sessions.json
