@@ -1,443 +1,182 @@
-import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
-import subprocess, threading, time, socket, os, re, json, webbrowser, statistics
+
+import customtkinter as ctk
+from tkinter import messagebox, simpledialog
+import os,json,time,threading,subprocess,re,statistics,requests
 from collections import deque
 from datetime import datetime
 
-try:
-    import psutil
-except ImportError:
-    psutil = None
+ROOT=os.path.dirname(os.path.dirname(os.path.abspath(__file__))); DATA=os.path.join(ROOT,"data"); os.makedirs(DATA,exist_ok=True)
+GAMES=os.path.join(DATA,"games.json"); HISTORY=os.path.join(DATA,"sessions.json")
+SEEDS=[("Brookhaven RP","4924922222"),("Blox Fruits","2753915549"),("Adopt Me!","920587237"),("DOORS","6516141723"),("Murder Mystery 2","142823291"),("Tower of Hell","1962086868"),("Jailbreak","606849621"),("Arsenal","286090429"),("BedWars","6872265039"),("Pet Simulator 99","8737899170"),("Dress To Impress","15101393044"),("The Strongest Battlegrounds","10449761463"),("Blade Ball","13772394625"),("Da Hood","2788229376"),("Natural Disaster Survival","189707"),("Work at a Pizza Place","192800"),("MeepCity","370731277"),("Royale High","735030788"),("Evade","9872472334"),("Rainbow Friends","7991339063"),("Fisch","16732694052"),("RIVALS","17625359962"),("Build A Boat For Treasure","537413528"),("King Legacy","4520749081"),("Anime Defenders","17017769292"),("Anime Vanguards","16146832113"),("Phantom Forces","292439477"),("Vehicle Simulator","171391948"),("Driving Empire","3351674303"),("Car Crushers 2","654732683")]
+def load(p,d):
+    try:return json.load(open(p,encoding="utf8"))
+    except:return d
+def save(p,d):json.dump(d,open(p,"w",encoding="utf8"),indent=2,ensure_ascii=False)
 
-try:
-    import requests
-except ImportError:
-    requests = None
-
-BASE = os.path.dirname(os.path.abspath(__file__))
-DATA = os.path.join(os.path.dirname(BASE), "data")
-GAMES_FILE = os.path.join(DATA, "games.json")
-HISTORY_FILE = os.path.join(DATA, "sessions.json")
-os.makedirs(DATA, exist_ok=True)
-
-DEFAULT_GAMES = [
-    {"name": "Brookhaven RP", "place_id": "4924922222", "favorite": False},
-    {"name": "Blox Fruits", "place_id": "2753915549", "favorite": False},
-    {"name": "DOORS", "place_id": "6516141723", "favorite": False},
-    {"name": "Adopt Me!", "place_id": "920587237", "favorite": False},
-]
-
-def load_json(path, default):
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return default
-
-def save_json(path, data):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-
-class RobloxLauncher:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Roblox Gaming Launcher")
-        self.root.geometry("1180x760")
-        self.root.minsize(1000, 650)
-        self.running = True
-        self.monitoring = True
-        self.samples = deque(maxlen=300)
-        self.losses = deque(maxlen=300)
-        self.spikes = deque(maxlen=200)
-        self.games = load_json(GAMES_FILE, DEFAULT_GAMES)
-        self.history = load_json(HISTORY_FILE, [])
-        self.selected_game = None
-        self.servers = []
-        self.server_loading = False
-        self.session_start = datetime.now()
-        self.session_spikes = 0
-        self.last_ping = None
-        self.status_var = tk.StringVar(value="Ready")
-        self.ping_var = tk.StringVar(value="--")
-        self.avg_var = tk.StringVar(value="--")
-        self.jitter_var = tk.StringVar(value="--")
-        self.loss_var = tk.StringVar(value="0%")
-        self.cpu_var = tk.StringVar(value="--")
-        self.ram_var = tk.StringVar(value="--")
-        self.game_var = tk.StringVar(value="No game selected")
-        self.build_ui()
-        self.refresh_games()
-        self.root.protocol("WM_DELETE_WINDOW", self.close)
-        threading.Thread(target=self.monitor_loop, daemon=True).start()
-        self.root.after(1000, self.refresh_system)
-
-    def build_ui(self):
-        style = ttk.Style()
-        try: style.theme_use("clam")
-        except Exception: pass
-        style.configure("Title.TLabel", font=("Segoe UI", 20, "bold"))
-        style.configure("Card.TLabelframe", padding=10)
-        style.configure("CardValue.TLabel", font=("Segoe UI", 15, "bold"))
-        style.configure("Accent.TButton", font=("Segoe UI", 10, "bold"))
-
-        header = ttk.Frame(self.root, padding=(18, 14, 18, 8))
-        header.pack(fill="x")
-        ttk.Label(header, text="Roblox Gaming Launcher", style="Title.TLabel").pack(side="left")
-        ttk.Label(header, textvariable=self.status_var).pack(side="right")
-
-        self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(fill="both", expand=True, padx=14, pady=8)
-        self.home = ttk.Frame(self.notebook, padding=14)
-        self.library = ttk.Frame(self.notebook, padding=14)
-        self.servers_tab = ttk.Frame(self.notebook, padding=14)
-        self.monitor_tab = ttk.Frame(self.notebook, padding=14)
-        self.history_tab = ttk.Frame(self.notebook, padding=14)
-        self.settings_tab = ttk.Frame(self.notebook, padding=14)
-        for tab, name in [(self.home,"Home"),(self.library,"Game Library"),(self.servers_tab,"Servers"),(self.monitor_tab,"Live Monitor"),(self.history_tab,"History"),(self.settings_tab,"Settings")]:
-            self.notebook.add(tab, text=name)
-        self.build_home()
-        self.build_library()
-        self.build_servers()
-        self.build_monitor()
-        self.build_history()
-        self.build_settings()
-
-    def metric_card(self, parent, title, variable, row, col):
-        f = ttk.LabelFrame(parent, text=title, style="Card.TLabelframe")
-        f.grid(row=row, column=col, sticky="nsew", padx=5, pady=5)
-        ttk.Label(f, textvariable=variable, style="CardValue.TLabel").pack()
-        return f
-
-    def build_home(self):
-        top = ttk.LabelFrame(self.home, text="Selected game", padding=12)
-        top.pack(fill="x")
-        ttk.Label(top, textvariable=self.game_var, font=("Segoe UI", 16, "bold")).pack(side="left")
-        ttk.Button(top, text="JOIN BEST SERVER", style="Accent.TButton", command=self.join_best).pack(side="right", padx=5)
-        ttk.Button(top, text="Browse Servers", command=lambda: self.notebook.select(self.servers_tab)).pack(side="right", padx=5)
-
-        cards = ttk.Frame(self.home)
-        cards.pack(fill="x", pady=12)
-        for i in range(4): cards.columnconfigure(i, weight=1)
-        self.metric_card(cards, "Current Ping", self.ping_var, 0, 0)
-        self.metric_card(cards, "Average", self.avg_var, 0, 1)
-        self.metric_card(cards, "Jitter", self.jitter_var, 0, 2)
-        self.metric_card(cards, "Packet Loss", self.loss_var, 0, 3)
-
-        actions = ttk.LabelFrame(self.home, text="Quick actions", padding=12)
-        actions.pack(fill="x", pady=5)
-        ttk.Button(actions, text="Open Roblox", command=self.launch_roblox).pack(side="left", padx=5)
-        ttk.Button(actions, text="Gaming Optimize", command=self.optimize).pack(side="left", padx=5)
-        ttk.Button(actions, text="Reset Optimizer", command=self.reset_optimize).pack(side="left", padx=5)
-        ttk.Button(actions, text="20s Connection Test", command=self.run_test).pack(side="left", padx=5)
-
-        info = ttk.LabelFrame(self.home, text="How it works", padding=12)
-        info.pack(fill="both", expand=True, pady=10)
-        ttk.Label(info, justify="left", wraplength=900, text=
-            "Choose a Roblox game from your library, then use JOIN BEST SERVER to fetch public servers and pick a suitable one. "
-            "The launcher continuously measures your connection while you play, so sudden lag spikes are recorded instead of relying on one ping test. "
-            "Exact Roblox game-server latency/IP is not exposed reliably to normal desktop apps, so the server browser never pretends that a displayed value is an exact server ping."
-        ).pack(anchor="nw")
-
-    def build_library(self):
-        bar = ttk.Frame(self.library)
-        bar.pack(fill="x")
-        ttk.Label(bar, text="Search games:").pack(side="left")
-        self.search_var = tk.StringVar()
-        self.search_var.trace_add("write", lambda *_: self.refresh_games())
-        ttk.Entry(bar, textvariable=self.search_var, width=45).pack(side="left", padx=8)
-        ttk.Button(bar, text="Add Game", command=self.add_game).pack(side="right")
-        ttk.Button(bar, text="Remove Selected", command=self.remove_game).pack(side="right", padx=5)
-
-        self.game_list = ttk.Treeview(self.library, columns=("name","place","fav"), show="headings", height=18)
-        self.game_list.heading("name", text="Game")
-        self.game_list.heading("place", text="Place ID")
-        self.game_list.heading("fav", text="Favorite")
-        self.game_list.column("name", width=420)
-        self.game_list.column("place", width=180)
-        self.game_list.column("fav", width=100)
-        self.game_list.pack(fill="both", expand=True, pady=10)
-        self.game_list.bind("<<TreeviewSelect>>", self.select_game)
-        ttk.Label(self.library, text="Tip: Add any Roblox game by its Place ID. Search filters your saved library.").pack(anchor="w")
-
-    def build_servers(self):
-        top = ttk.Frame(self.servers_tab)
-        top.pack(fill="x")
-        ttk.Label(top, textvariable=self.game_var, font=("Segoe UI", 15, "bold")).pack(side="left")
-        ttk.Button(top, text="Find Servers", command=self.find_servers).pack(side="right")
-        ttk.Button(top, text="Join Selected", command=self.join_selected_server).pack(side="right", padx=5)
-        ttk.Button(top, text="Join Best", command=self.join_best).pack(side="right", padx=5)
-
-        cols = ("id","players","max","fps","age","score")
-        self.server_tree = ttk.Treeview(self.servers_tab, columns=cols, show="headings")
-        heads = {"id":"Server ID","players":"Players","max":"Max","fps":"FPS","age":"Ping/Info","score":"Selection Score"}
-        widths = {"id":350,"players":90,"max":80,"fps":90,"age":180,"score":150}
-        for c in cols:
-            self.server_tree.heading(c, text=heads[c])
-            self.server_tree.column(c, width=widths[c])
-        self.server_tree.pack(fill="both", expand=True, pady=10)
-        ttk.Label(self.servers_tab, text="Scores prioritize available slots and your current network health. Roblox does not expose reliable exact public-server ping to this app.").pack(anchor="w")
-
-    def build_monitor(self):
-        cards = ttk.Frame(self.monitor_tab)
-        cards.pack(fill="x")
-        for i in range(2): cards.columnconfigure(i, weight=1)
-        self.metric_card(cards, "CPU", self.cpu_var, 0, 0)
-        self.metric_card(cards, "RAM", self.ram_var, 0, 1)
-
-        self.canvas = tk.Canvas(self.monitor_tab, height=330, background="#101318", highlightthickness=0)
-        self.canvas.pack(fill="both", expand=True, pady=10)
-        bottom = ttk.Frame(self.monitor_tab)
-        bottom.pack(fill="both", expand=True)
-        ttk.Label(bottom, text="Live event log").pack(anchor="w")
-        self.log = tk.Text(bottom, height=8, state="disabled", font=("Consolas",9))
-        self.log.pack(fill="both", expand=True)
-        self.log_msg("Continuous network monitoring started.")
-
-    def build_history(self):
-        ttk.Button(self.history_tab, text="Refresh", command=self.refresh_history).pack(anchor="e")
-        self.history_tree = ttk.Treeview(self.history_tab, columns=("time","game","avg","worst","loss","spikes"), show="headings")
-        for c,t in [("time","Date"),("game","Game"),("avg","Avg Ping"),("worst","Worst"),("loss","Loss"),("spikes","Spikes")]:
-            self.history_tree.heading(c,text=t)
-        self.history_tree.pack(fill="both", expand=True, pady=10)
-        self.refresh_history()
-
-    def build_settings(self):
-        self.auto_opt = tk.BooleanVar(value=False)
-        self.interval_var = tk.DoubleVar(value=0.5)
-        ttk.Checkbutton(self.settings_tab, text="Automatically enable high-performance power plan when launching", variable=self.auto_opt).pack(anchor="w", pady=8)
-        ttk.Label(self.settings_tab, text="Ping monitor interval (seconds)").pack(anchor="w")
-        ttk.Spinbox(self.settings_tab, from_=0.25, to=2.0, increment=0.05, textvariable=self.interval_var, width=10).pack(anchor="w", pady=5)
-        ttk.Label(self.settings_tab, wraplength=850, justify="left", text=
-            "Safe optimization only changes the Windows power plan. No registry hacks, security disabling, or network adapter modifications are performed. "
-            "Server discovery uses Roblox's public server listing when available."
-        ).pack(anchor="w", pady=15)
-
-    def log_msg(self, msg):
-        def add():
-            self.log.configure(state="normal")
-            self.log.insert("end", f"[{datetime.now():%H:%M:%S}] {msg}\n")
-            self.log.see("end")
-            self.log.configure(state="disabled")
-        self.root.after(0, add)
-
-    def ping(self, host):
-        try:
-            p = subprocess.run(["ping","-n","1","-w","800",host], capture_output=True, text=True, timeout=2)
-            m = re.search(r"(?:time[=<]\s*)(\d+)\s*ms", p.stdout, re.I)
-            return float(m.group(1)) if m else None
-        except Exception:
-            return None
-
-    def monitor_loop(self):
-        hosts = ["1.1.1.1","8.8.8.8"]
-        i = 0
-        while self.monitoring:
-            v = self.ping(hosts[i % 2]); i += 1
-            if v is None:
-                self.losses.append(1); self.last_ping = None
-                self.root.after(0, self.update_monitor_ui)
-            else:
-                self.losses.append(0); self.last_ping = v
-                self.samples.append((time.time(),v))
-                recent = [x[1] for x in list(self.samples)[-30:]]
-                avg = statistics.mean(recent) if recent else v
-                jitter = statistics.mean([abs(recent[j]-recent[j-1]) for j in range(1,len(recent))]) if len(recent)>1 else 0
-                if v > max(100, avg*2.5) and v-avg > 40:
-                    self.spikes.append((time.time(),v)); self.session_spikes += 1
-                    self.log_msg(f"PING SPIKE: {v:.0f} ms (recent avg {avg:.0f} ms)")
-                self.root.after(0, self.update_monitor_ui)
-            try: delay = max(0.25, float(self.interval_var.get()))
-            except Exception: delay = 0.5
-            time.sleep(delay)
-
-    def update_monitor_ui(self):
-        vals = [v for _,v in self.samples]
-        recent = vals[-30:]
-        avg = statistics.mean(recent) if recent else None
-        jitter = statistics.mean([abs(recent[i]-recent[i-1]) for i in range(1,len(recent))]) if len(recent)>1 else 0
-        loss = (sum(self.losses)/len(self.losses)*100) if self.losses else 0
-        self.ping_var.set("--" if self.last_ping is None else f"{self.last_ping:.0f} ms")
-        self.avg_var.set("--" if avg is None else f"{avg:.0f} ms")
-        self.jitter_var.set(f"{jitter:.1f} ms")
-        self.loss_var.set(f"{loss:.1f}%")
-        self.status_var.set("LIVE • Monitoring" if self.last_ping is not None else "LIVE • Packet loss")
-        self.draw_graph()
-
-    def draw_graph(self):
-        if not hasattr(self,"canvas"): return
-        c=self.canvas; c.delete("all")
-        w=max(c.winfo_width(),400); h=max(c.winfo_height(),250)
-        vals=[v for _,v in list(self.samples)[-120:]]
-        if not vals:
-            c.create_text(w/2,h/2,text="Waiting for measurements...",fill="white")
-            return
-        mx=max(max(vals),100)
-        step=w/max(1,len(vals)-1)
-        pts=[]
-        for i,v in enumerate(vals):
-            x=i*step; y=h-25-(v/mx)*(h-50)
-            pts.extend((x,y))
-        if len(pts)>=4: c.create_line(*pts,fill="#58a6ff",width=2,smooth=True)
-        c.create_text(10,10,anchor="nw",text=f"{len(vals)} samples • scale {mx:.0f} ms",fill="#b8c0cc")
-
-    def refresh_system(self):
-        if psutil:
-            try:
-                self.cpu_var.set(f"{psutil.cpu_percent():.0f}%")
-                self.ram_var.set(f"{psutil.virtual_memory().percent:.0f}%")
-            except Exception: pass
-        if self.running: self.root.after(1500,self.refresh_system)
-
-    def refresh_games(self):
-        q=self.search_var.get().lower() if hasattr(self,"search_var") else ""
-        for item in self.game_list.get_children(): self.game_list.delete(item)
-        for i,g in enumerate(self.games):
-            if q and q not in g["name"].lower(): continue
-            self.game_list.insert("", "end", iid=str(i), values=(g["name"],g["place_id"],"★" if g.get("favorite") else ""))
-
-    def select_game(self, _=None):
-        sel=self.game_list.selection()
-        if not sel: return
-        self.selected_game=self.games[int(sel[0])]
-        self.game_var.set(self.selected_game["name"])
-        self.status_var.set(f"Selected • {self.selected_game['name']}")
-
+class App:
+    def __init__(self):
+        ctk.set_appearance_mode("dark");ctk.set_default_color_theme("blue")
+        self.root=ctk.CTk();self.root.title("Roblox Gaming Launcher");self.root.geometry("1280x820");self.root.minsize(1050,700)
+        self.running=True;self.loading=False;self.games=load(GAMES,[{"name":n,"place_id":p} for n,p in SEEDS]);self.history=load(HISTORY,[])
+        self.selected=None;self.servers=[];self.cursor=None;self.samples=deque(maxlen=360);self.loss=deque(maxlen=360);self.spikes=0
+        self.icmp=None;self.rbx_ping=None;self.rbx_server=None
+        self.ui();threading.Thread(target=self.net_loop,daemon=True).start();threading.Thread(target=self.rbx_monitor,daemon=True).start();threading.Thread(target=self.catalog_startup,daemon=True).start()
+        self.root.after(700,self.tick);self.root.protocol("WM_DELETE_WINDOW",self.close)
+    def ui(self):
+        s=ctk.CTkFrame(self.root,width=220,corner_radius=0);s.pack(side="left",fill="y");s.pack_propagate(False)
+        ctk.CTkLabel(s,text="ROBLOX\nGAMING",font=("Segoe UI",26,"bold")).pack(pady=(32,2));ctk.CTkLabel(s,text="LOW-LATENCY LAUNCHER",font=("Segoe UI",10)).pack(pady=(0,25))
+        for t,f in [("⌂  Home",self.home),("🎮  Games",self.games_page),("🖥  Servers",self.servers_page),("📡  Network",self.network_page),("📊  History",self.history_page),("⚙  Settings",self.settings_page)]:
+            ctk.CTkButton(s,text=t,anchor="w",height=42,fg_color="transparent",hover_color="#26384d",command=f).pack(fill="x",padx=12,pady=3)
+        self.side=ctk.CTkLabel(s,text="-- ms",font=("Segoe UI",22,"bold"));self.side.pack(pady=(35,0));self.side2=ctk.CTkLabel(s,text="Monitoring",text_color="#8b949e");self.side2.pack()
+        self.body=ctk.CTkFrame(self.root,fg_color="#0d1117",corner_radius=0);self.body.pack(side="left",fill="both",expand=True);self.home()
+    def clear(self):
+        for x in self.body.winfo_children():x.destroy()
+    def head(self,t,s=""):
+        ctk.CTkLabel(self.body,text=t,font=("Segoe UI",30,"bold")).pack(anchor="w",padx=30,pady=(25,0))
+        if s:ctk.CTkLabel(self.body,text=s,text_color="#8b949e").pack(anchor="w",padx=32,pady=(2,16))
+    def card(self,p,t,v,s):
+        f=ctk.CTkFrame(p,corner_radius=14,fg_color="#161b22");f.pack(side="left",fill="both",expand=True,padx=5)
+        ctk.CTkLabel(f,text=t,text_color="#8b949e").pack(anchor="w",padx=15,pady=(12,0));ctk.CTkLabel(f,text=v,font=("Segoe UI",23,"bold")).pack(anchor="w",padx=15);ctk.CTkLabel(f,text=s,text_color="#6e7681").pack(anchor="w",padx=15,pady=(0,12))
+    def home(self):
+        self.clear();self.head("Gaming Dashboard","Roblox-specific ping is separate from normal internet ping.")
+        r=ctk.CTkFrame(self.body,fg_color="transparent");r.pack(fill="x",padx=25)
+        self.card(r,"INTERNET BASELINE",f"{self.icmp:.0f} ms" if self.icmp else "--","ICMP to 1.1.1.1 / 8.8.8.8")
+        self.card(r,"ROBLOX NETWORK PING",f"{self.rbx_ping:.0f} ms" if self.rbx_ping else "--","Detected from Roblox client logs")
+        self.card(r,"JITTER",self.jitter(),"30-sample rolling");self.card(r,"PACKET LOSS",self.loss_text(),"rolling window")
+        h=ctk.CTkFrame(self.body,corner_radius=18,fg_color="#161b22");h.pack(fill="x",padx=30,pady=18)
+        ctk.CTkLabel(h,text=self.selected["name"] if self.selected else "Choose a game",font=("Segoe UI",24,"bold")).pack(anchor="w",padx=22,pady=(18,0))
+        ctk.CTkLabel(h,text=f"Place ID {self.selected['place_id']}" if self.selected else "Games → select a game").pack(anchor="w",padx=22)
+        b=ctk.CTkFrame(h,fg_color="transparent");b.pack(fill="x",padx=16,pady=18)
+        ctk.CTkButton(b,text="⚡ FIND BEST SERVER",height=44,command=self.best).pack(side="left",padx=5);ctk.CTkButton(b,text="🖥 BROWSE SERVERS",height=44,command=self.servers_page).pack(side="left",padx=5);ctk.CTkButton(b,text="▶ OPEN ROBLOX",height=44,fg_color="#238636",command=self.open_roblox).pack(side="left",padx=5)
+        self.logbox=ctk.CTkTextbox(self.body,height=220);self.logbox.pack(fill="both",expand=True,padx=30,pady=(0,25));self.logbox.insert("end","Launcher ready. Continuous monitoring is active.\n")
+    def games_page(self):
+        self.clear();self.head("Game Library",f"{len(self.games)} saved • refresh Discover to import 100+ current games")
+        top=ctk.CTkFrame(self.body,fg_color="transparent");top.pack(fill="x",padx=28)
+        self.search=ctk.CTkEntry(top,placeholder_text="Search games...",height=40);self.search.pack(side="left",fill="x",expand=True,padx=(0,8));self.search.bind("<KeyRelease>",lambda e:self.render_games())
+        ctk.CTkButton(top,text="↻ Refresh 100+",command=self.refresh_catalog).pack(side="right",padx=4);ctk.CTkButton(top,text="+ Add",command=self.add_game).pack(side="right",padx=4)
+        self.gs=ctk.CTkScrollableFrame(self.body,fg_color="transparent");self.gs.pack(fill="both",expand=True,padx=24,pady=15);self.render_games()
+    def render_games(self):
+        if not hasattr(self,"gs"):return
+        for w in self.gs.winfo_children():w.destroy()
+        q=self.search.get().lower() if hasattr(self,"search") else ""
+        for g in self.games:
+            if q and q not in g["name"].lower():continue
+            f=ctk.CTkFrame(self.gs,corner_radius=12,fg_color="#161b22");f.pack(fill="x",pady=4)
+            ctk.CTkLabel(f,text=g["name"],font=("Segoe UI",16,"bold")).pack(side="left",padx=15,pady=12);ctk.CTkLabel(f,text=f"ID {g['place_id']}",text_color="#8b949e").pack(side="left")
+            ctk.CTkButton(f,text="Select",width=80,command=lambda x=g:self.select(x)).pack(side="right",padx=6);ctk.CTkButton(f,text="Join",width=70,fg_color="#238636",command=lambda x=g:self.select_and_best(x)).pack(side="right",padx=2)
+    def select(self,g):self.selected=g;self.home()
+    def select_and_best(self,g):self.selected=g;self.best()
     def add_game(self):
-        name=simpledialog.askstring("Add game","Game name:")
-        if not name: return
-        pid=simpledialog.askstring("Add game","Roblox Place ID:")
-        if not pid or not pid.isdigit(): return messagebox.showerror("Invalid ID","Place ID must be numeric.")
-        self.games.append({"name":name.strip(),"place_id":pid.strip(),"favorite":False})
-        save_json(GAMES_FILE,self.games); self.refresh_games()
-
-    def remove_game(self):
-        sel=self.game_list.selection()
-        if not sel: return
-        g=self.games.pop(int(sel[0]))
-        save_json(GAMES_FILE,self.games); self.selected_game=None; self.game_var.set("No game selected"); self.refresh_games()
-        self.log_msg(f"Removed {g['name']} from library.")
-
-    def fetch_servers(self, place_id):
-        if requests is None: raise RuntimeError("requests is not installed. Run SETUP.bat.")
-        url=f"https://games.roblox.com/v1/games/{place_id}/servers/Public?sortOrder=Asc&limit=100"
-        r=requests.get(url,timeout=10,headers={"User-Agent":"RobloxGamingLauncher/2.0"})
-        r.raise_for_status()
-        return r.json().get("data",[])
-
-    def find_servers(self):
-        if not self.selected_game:
-            return messagebox.showinfo("Choose a game","Select a game from Game Library first.")
-        if self.server_loading: return
-        self.server_loading=True
-        self.status_var.set("Finding public servers...")
-        for x in self.server_tree.get_children(): self.server_tree.delete(x)
-        threading.Thread(target=self.server_worker,daemon=True).start()
-
-    def server_worker(self):
-        try:
-            data=self.fetch_servers(self.selected_game["place_id"])
-            self.servers=data
-            self.root.after(0,self.show_servers)
-        except Exception as e:
-            self.root.after(0,lambda: messagebox.showerror("Server discovery failed",str(e)))
-        finally:
-            self.server_loading=False
-
-    def server_score(self,s):
-        playing=int(s.get("playing",0) or 0); maxp=int(s.get("maxPlayers",1) or 1)
-        free=maxp-playing
-        ping=self.last_ping if self.last_ping is not None else 999
-        # This is a selection score, not a server ping.
-        return max(0,100 - min(ping,200)*0.2) + min(free,10)*2 + (5 if playing < maxp else 0)
-
-    def show_servers(self):
-        self.server_tree.delete(*self.server_tree.get_children())
-        ranked=sorted(self.servers,key=self.server_score,reverse=True)
-        for s in ranked:
-            sid=s.get("id","")
-            self.server_tree.insert("", "end", iid=sid, values=(sid[:28]+"..." if len(sid)>28 else sid,s.get("playing","?"),s.get("maxPlayers","?"),s.get("fps","?"),f"current {self.last_ping:.0f} ms" if self.last_ping else "measuring",f"{self.server_score(s):.1f}"))
-        self.status_var.set(f"Found {len(ranked)} public servers")
-        self.log_msg(f"Loaded {len(ranked)} public servers for {self.selected_game['name']}.")
-
-    def join_selected_server(self):
-        sel=self.server_tree.selection()
-        if not sel: return messagebox.showinfo("Choose a server","Select a server first.")
-        self.launch_server(sel[0])
-
-    def join_best(self):
-        if not self.selected_game:
-            return messagebox.showinfo("Choose a game","Select a game from Game Library first.")
-        if not self.servers:
-            self.find_servers()
-            self.root.after(1500,self.join_best)
-            return
-        best=max(self.servers,key=self.server_score)
-        self.launch_server(best.get("id"))
-
-    def launch_server(self, server_id=None):
-        if not self.selected_game: return
-        pid=self.selected_game["place_id"]
-        try:
-            if server_id:
-                uri=f"roblox://placeId={pid}&gameInstanceId={server_id}"
-                os.startfile(uri)
-                self.log_msg(f"Joining selected server for {self.selected_game['name']}.")
-            else:
-                os.startfile("roblox-player:")
-                self.log_msg(f"Opening {self.selected_game['name']}.")
-            if self.auto_opt.get(): self.optimize()
-        except Exception as e:
-            messagebox.showerror("Roblox launch failed",str(e))
-
-    def launch_roblox(self):
-        self.launch_server(None)
-
-    def optimize(self):
-        try:
-            subprocess.run(["powercfg","/setactive","SCHEME_MIN"],capture_output=True)
-            self.log_msg("High-performance Windows power plan requested.")
-        except Exception as e: self.log_msg(f"Optimization failed: {e}")
-
-    def reset_optimize(self):
-        try:
-            subprocess.run(["powercfg","/setactive","SCHEME_BALANCED"],capture_output=True)
-            self.log_msg("Balanced power plan restored.")
-        except Exception as e: self.log_msg(f"Reset failed: {e}")
-
-    def run_test(self):
-        self.log_msg("Running 20-second connection test...")
+        n=simpledialog.askstring("Add game","Game name:");p=simpledialog.askstring("Add game","Place ID:")
+        if n and p and p.isdigit():self.games.append({"name":n,"place_id":p});save(GAMES,self.games);self.render_games()
+    def catalog_startup(self):self.refresh_catalog(True)
+    def refresh_catalog(self,silent=False):
         def work():
-            vals=[]
-            for _ in range(20):
-                v=self.ping("1.1.1.1")
-                if v is not None: vals.append(v)
-                time.sleep(1)
-            if vals: self.log_msg(f"Test: avg {statistics.mean(vals):.0f} ms • min {min(vals):.0f} • max {max(vals):.0f} • replies {len(vals)}/20")
-            else: self.log_msg("Test: no replies.")
+            try:
+                r=requests.get("https://api.rolimons.com/games/v1/gamelist",timeout=20);r.raise_for_status();d=r.json();a=[]
+                for pid,v in d.get("games",{}).items():
+                    if isinstance(v,list) and len(v)>1 and str(pid).isdigit():a.append({"name":str(v[0]),"place_id":str(pid),"players":int(v[1] or 0)})
+                a.sort(key=lambda x:x.get("players",0),reverse=True);old={g["place_id"]:g for g in self.games}
+                for g in a[:150]:old.setdefault(g["place_id"],g)
+                self.games=list(old.values());save(GAMES,self.games)
+                if not silent:self.root.after(0,self.render_games)
+                self.log(f"Catalog: {len(a)} games available; top 150 imported.")
+            except Exception as e:
+                if not silent:self.root.after(0,lambda:messagebox.showerror("Catalog error",str(e)))
         threading.Thread(target=work,daemon=True).start()
-
-    def refresh_history(self):
-        if not hasattr(self,"history_tree"): return
-        self.history_tree.delete(*self.history_tree.get_children())
-        for h in reversed(self.history[-100:]):
-            self.history_tree.insert("", "end", values=(h.get("time",""),h.get("game",""),h.get("avg",""),h.get("worst",""),h.get("loss",""),h.get("spikes","")))
-
+    def servers_page(self):
+        self.clear();self.head("Server Browser","Real public-server data. No fake per-server ping.")
+        top=ctk.CTkFrame(self.body,fg_color="transparent");top.pack(fill="x",padx=28);ctk.CTkLabel(top,text=self.selected["name"] if self.selected else "Choose a game",font=("Segoe UI",20,"bold")).pack(side="left")
+        ctk.CTkButton(top,text="Find Servers",command=self.load_servers).pack(side="right",padx=4);ctk.CTkButton(top,text="Load More",command=self.load_servers).pack(side="right",padx=4)
+        self.ss=ctk.CTkLabel(self.body,text="Select a game.",text_color="#8b949e");self.ss.pack(anchor="w",padx=30,pady=8)
+        self.sf=ctk.CTkScrollableFrame(self.body,fg_color="transparent");self.sf.pack(fill="both",expand=True,padx=24)
+        if self.selected:self.load_servers()
+    def load_servers(self):
+        if not self.selected or self.loading:return
+        self.loading=True;self.ss.configure(text="Loading Roblox public servers...")
+        def work():
+            try:
+                u=f"https://games.roblox.com/v1/games/{self.selected['place_id']}/servers/Public";q={"sortOrder":"Desc","limit":100}
+                if self.cursor:q["cursor"]=self.cursor
+                r=requests.get(u,params=q,timeout=15,headers={"User-Agent":"RobloxGamingLauncher/3.1"})
+                if r.status_code!=200:raise RuntimeError(f"HTTP {r.status_code}: {r.text[:250]}")
+                d=r.json();self.servers+=d.get("data",[]);self.cursor=d.get("nextPageCursor");self.root.after(0,self.render_servers)
+            except Exception as e:self.root.after(0,lambda:messagebox.showerror("Server browser error",str(e)))
+            finally:self.loading=False
+        threading.Thread(target=work,daemon=True).start()
+    def render_servers(self):
+        for w in self.sf.winfo_children():w.destroy()
+        if not self.servers:self.ss.configure(text="Roblox returned no public servers.");return
+        self.ss.configure(text=f"{len(self.servers)} servers loaded")
+        for s in sorted(self.servers,key=self.score,reverse=True):
+            f=ctk.CTkFrame(self.sf,corner_radius=12,fg_color="#161b22");f.pack(fill="x",pady=4);p=s.get("playing","?");m=s.get("maxPlayers","?");sid=s.get("id","")
+            ctk.CTkLabel(f,text=f"{p}/{m} players",width=120,font=("Segoe UI",15,"bold")).pack(side="left",padx=12,pady=12);ctk.CTkLabel(f,text=f"Score {self.score(s):.0f}",width=100).pack(side="left")
+            ctk.CTkLabel(f,text=sid[:28]+"...",text_color="#8b949e").pack(side="left",fill="x",expand=True);ctk.CTkButton(f,text="JOIN",width=80,command=lambda x=s:self.launch(x)).pack(side="right",padx=8)
+    def score(self,s):
+        free=max(0,int(s.get("maxPlayers",0) or 0)-int(s.get("playing",0) or 0));base=max(0,100-min(self.icmp or 999,250)*.22);return base+min(free,15)*2
+    def best(self):
+        if not self.selected:return messagebox.showinfo("Choose a game","Select a game first.")
+        def work():
+            try:
+                u=f"https://games.roblox.com/v1/games/{self.selected['place_id']}/servers/Public";r=requests.get(u,params={"sortOrder":"Desc","limit":100},timeout=15,headers={"User-Agent":"RobloxGamingLauncher/3.1"});r.raise_for_status();a=r.json().get("data",[])
+                if not a:raise RuntimeError("Roblox returned no public servers.")
+                self.root.after(0,lambda:self.launch(max(a,key=self.score)))
+            except Exception as e:self.root.after(0,lambda:messagebox.showerror("Best server",str(e)))
+        threading.Thread(target=work,daemon=True).start()
+    def launch(self,s):
+        try:os.startfile(f"roblox://placeId={self.selected['place_id']}&gameInstanceId={s['id']}");self.log("Joining selected public server...")
+        except Exception as e:messagebox.showerror("Join failed",str(e))
+    def open_roblox(self):os.startfile("roblox-player:")
+    def network_page(self):
+        self.clear();self.head("Live Network","25 ms to Cloudflare is not the same measurement as Roblox Network Ping.")
+        r=ctk.CTkFrame(self.body,fg_color="transparent");r.pack(fill="x",padx=25);self.card(r,"ICMP BASELINE",f"{self.icmp:.0f} ms" if self.icmp else "--","1.1.1.1 / 8.8.8.8");self.card(r,"ROBLOX NETWORK PING",f"{self.rbx_ping:.0f} ms" if self.rbx_ping else "--","from Roblox logs when exposed");self.card(r,"SERVER ADDRESS",self.rbx_server or "--","from Roblox client log");self.card(r,"LOSS",self.loss_text(),"rolling")
+        t=ctk.CTkTextbox(self.body);t.pack(fill="both",expand=True,padx=30,pady=20);t.insert("end","Roblox measures Network Ping to the actual game server. This launcher separately measures an internet baseline. A low baseline and high Roblox ping can happen because the routes to those destinations are different.\n\nThe client log is checked automatically. If the current Roblox build does not expose a readable NetworkPing value in logs, the field stays -- instead of showing a fake number.")
+    def history_page(self):
+        self.clear();self.head("History","Saved locally.");t=ctk.CTkTextbox(self.body);t.pack(fill="both",expand=True,padx=30,pady=20)
+        for h in reversed(self.history[-100:]):t.insert("end",f"{h.get('time')} | {h.get('game')} | avg {h.get('avg')} | worst {h.get('worst')} | loss {h.get('loss')} | spikes {h.get('spikes')}\n")
+    def settings_page(self):
+        self.clear();self.head("Settings","Safe Windows optimization only.");f=ctk.CTkFrame(self.body,corner_radius=14);f.pack(fill="x",padx=30,pady=15)
+        ctk.CTkButton(f,text="High Performance Power Plan",command=lambda:self.power("SCHEME_MIN")).pack(anchor="w",padx=20,pady=20);ctk.CTkButton(f,text="Restore Balanced Plan",command=lambda:self.power("SCHEME_BALANCED")).pack(anchor="w",padx=20,pady=(0,20))
+    def power(self,x):subprocess.run(["powercfg","/setactive",x],capture_output=True);self.log("Power plan changed.")
+    def ping(self,h):
+        try:
+            p=subprocess.run(["ping","-n","1","-w","800",h],capture_output=True,text=True,timeout=2);m=re.search(r"time[=<]\s*(\d+)\s*ms",p.stdout,re.I);return float(m.group(1)) if m else None
+        except:return None
+    def net_loop(self):
+        hs=["1.1.1.1","8.8.8.8"];i=0
+        while self.running:
+            v=self.ping(hs[i%2]);i+=1
+            if v is None:self.loss.append(1)
+            else:
+                self.loss.append(0);self.icmp=v;self.samples.append(v);a=statistics.mean(list(self.samples)[-30:])
+                if v>max(100,a*2.5) and v-a>40:self.spikes+=1;self.log(f"PING SPIKE {v:.0f} ms")
+            time.sleep(.5)
+    def rbx_monitor(self):
+        d=os.path.expandvars(r"%LOCALAPPDATA%\Roblox\logs")
+        while self.running:
+            try:
+                fs=[os.path.join(d,x) for x in os.listdir(d) if x.lower().endswith(".log")]
+                if fs:
+                    p=max(fs,key=os.path.getmtime);txt=open(p,encoding="utf8",errors="ignore").read()[-800000:]
+                    a=re.findall(r"Server Address[^0-9]*(\d{1,3}(?:\.\d{1,3}){3})(?::(\d+))?",txt,re.I)
+                    if a:self.rbx_server=a[-1][0]+((":"+a[-1][1]) if a[-1][1] else "")
+                    vals=[]
+                    for pat in [r"NetworkPing[^0-9]{0,50}(\d+(?:\.\d+)?)",r"Network Ping[^0-9]{0,50}(\d+(?:\.\d+)?)"]:vals+=re.findall(pat,txt,re.I)
+                    if vals:self.rbx_ping=float(vals[-1])
+            except:pass
+            time.sleep(2)
+    def jitter(self):
+        x=list(self.samples)[-30:];return "--" if len(x)<2 else f"{statistics.mean(abs(x[i]-x[i-1]) for i in range(1,len(x))):.1f} ms"
+    def loss_text(self):return f"{statistics.mean(self.loss)*100:.1f}%" if self.loss else "0%"
+    def tick(self):
+        if hasattr(self,"side"):self.side.configure(text=f"{self.icmp:.0f} ms" if self.icmp else "-- ms")
+        if self.running:self.root.after(700,self.tick)
+    def log(self,msg):
+        if hasattr(self,"logbox"):self.logbox.insert("end",f"[{datetime.now():%H:%M:%S}] {msg}\n");self.logbox.see("end")
+        print(msg)
     def close(self):
-        self.monitoring=False; self.running=False
-        vals=[v for _,v in self.samples]
-        if vals:
-            self.history.append({
-                "time":datetime.now().strftime("%Y-%m-%d %H:%M"),
-                "game":self.selected_game["name"] if self.selected_game else "No game",
-                "avg":f"{statistics.mean(vals):.0f} ms",
-                "worst":f"{max(vals):.0f} ms",
-                "loss":f"{(sum(self.losses)/len(self.losses)*100):.1f}%" if self.losses else "0%",
-                "spikes":self.session_spikes
-            })
-            save_json(HISTORY_FILE,self.history[-200:])
-        self.root.destroy()
+        self.running=False
+        if self.samples:self.history.append({"time":datetime.now().strftime("%Y-%m-%d %H:%M"),"game":self.selected["name"] if self.selected else "No game","avg":f"{statistics.mean(self.samples):.0f} ms","worst":f"{max(self.samples):.0f} ms","loss":self.loss_text(),"spikes":self.spikes});save(HISTORY,self.history[-200:])
+        save(GAMES,self.games);self.root.destroy()
 
-if __name__ == "__main__":
-    root=tk.Tk()
-    RobloxLauncher(root)
-    root.mainloop()
+if __name__=="__main__":App().root.mainloop()
